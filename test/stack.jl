@@ -1,9 +1,12 @@
 using DSLearn
+import DSLearn: isobservable, observe!
 using DataStructures
 using MLDatasets
 using PyTorch
 using PyCall
 @pyimport asl
+
+Tensor = PyObject
 
 ## Reference
 "Empty stack of type `T`"
@@ -16,17 +19,26 @@ batch_size = 128
 
 "Differentiable Stack"
 mutable struct NStack
-  data
+  data::Tensor
 end
+
+isobservable(::Any) = true
+isobservable(::NStack) = false
 
 "Empty stack"
 empty(eltype::Type, ::Type{NStack}) =
   NStack(autograd.Variable(PyTorch.torch.zeros(128, 28, 28)))
 
 # Push
-push_net = asl.MLPNet(PyObject([stack_size, item_size]), PyObject([stack_size]))
-Base.push!(nstack::NStack, item) = ((item,) = push_net(nstack.data, item); NStack(nstack))
-pop_net = asl.MLPNet(PyObject([stack_size]), PyObject([stack_size, item_size]))
+push_net = asl.MLPNet([stack_size, item_size], [stack_size])
+
+function Base.push!(nstack::NStack, item)
+  (item,) = push_net(nstack.data, item)
+  NStack(nstack)
+end
+
+# Pop
+pop_net = asl.MLPNet([stack_size], [stack_size, item_size])
 
 function Base.pop!(nstack::NStack)
   stack, item = pop_net(nstack.data)
@@ -36,19 +48,18 @@ end
 
 ## Test
 ## ====
-
 "Example program"
 function ex1(items, StackT::Type, nrounds=1)
-  s = empty(eltype(items), StackT)
+  @show s = empty(eltype(items), StackT)
   # Push n items
   for i = 1:nrounds
-    v = PyTorch.variable(pop!(items))
-    push!(s, v)
+    @show v = pop!(items)
+    @show push!(s, v)
   end
 
   # Pop n items
   for i = 1:nrounds
-    i = pop!(s)
+    @show i = observe!(pop!(s))
   end
   return s
 end
@@ -59,17 +70,10 @@ function train_stack()
   all_items = [items[1:128, :, :] for i = 1:10]
 
   # Test with normal stack
-  ex1(all_items, Stack, 1)
-
-  # Test with neural stack
-  ex1(all_items, NStack, 1)
+  ref_ex1 = items -> ex1(items, Stack)
+  net_ex1 = items -> ex1(items, NStack)
+  trace1 = trace(ref_ex1, all_items)
+  trace2 = trace(net_ex1, all_items)
 end
 
-
-function myfunc(f)
-  while true
-    okok
-  end
-  s = []
-  push!(s, 1)
-end
+train_stack()
