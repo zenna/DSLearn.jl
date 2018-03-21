@@ -4,6 +4,8 @@ using DataStructures
 using MLDatasets
 using PyTorch
 using PyCall
+import Base.Iterators
+import IterTools
 @pyimport asl
 
 Tensor = PyObject
@@ -50,30 +52,48 @@ end
 ## ====
 "Example program"
 function ex1(items, StackT::Type, nrounds=1)
-  @show s = empty(eltype(items), StackT)
+  s = empty(eltype(items), StackT)
   # Push n items
   for i = 1:nrounds
-    @show v = pop!(items)
-    @show push!(s, v)
+    @show i
+    v = take!(items)
+    @show v["size"]()
+    push!(s, v)
   end
 
   # Pop n items
   for i = 1:nrounds
-    @show i = observe!(pop!(s))
+    i = observe!(pop!(s))
   end
   return s
 end
 
-function train_stack()
-  train_x, _ = MNIST.traindata()
-  items = permutedims(train_x, (3, 2, 1))
-  all_items = [items[1:128, :, :] for i = 1:10]
-
-  # Test with normal stack
-  ref_ex1 = items -> ex1(items, Stack)
-  net_ex1 = items -> ex1(items, NStack)
-  trace1 = trace(ref_ex1, all_items)
-  trace2 = trace(net_ex1, all_items)
+"Infinite generator of batches from data"
+function infinite_batches(data, batch_dim, batch_size, nelems = size(data, batch_dim))
+  ids = Iterators.partition(cycle(1:nelems), batch_size)
+  (slicedim(data, batch_dim, id) for id in ids)
 end
 
-train_stack()
+function train_stack(batch_size = 128)
+  train_x, _ = MNIST.traindata()
+  train_x = permutedims(train_x, (3, 1, 2))
+  batchgen_ = infinite_batches(train_x, 1, batch_size)
+  batchgen = IterTools.imap(autograd.Variable ∘ PyTorch.torch.Tensor ∘ float, batchgen_)
+  function producer(c::Channel)
+    for x in batchgen
+      put!(c, x)
+    end
+  end
+  items1 = Channel(producer)
+  items2 = Channel(producer)
+  # Test with normal stack
+  ref_ex1 = items -> ex1(items1, Stack)
+  net_ex1 = items -> ex1(items2, NStack)
+  println("Doing reference")
+  trace1 = trace(ref_ex1, batchgen)
+  println("Doing net")
+  trace2 = trace(net_ex1, batchgen)
+  trace1, trace2
+end
+
+# train_stack()
