@@ -8,7 +8,9 @@ import Base.Iterators
 import IterTools
 @pyimport asl
 
-Tensor = PyObject
+struct Image{T}
+  data::T
+end
 
 ## Reference
 "Empty stack of type `T`"
@@ -20,65 +22,67 @@ item_size = (28, 28)
 batch_size = 128
 
 "Differentiable Stack"
-mutable struct NStack
+mutable struct NStack{T}
   data::Tensor
 end
 
 isobservable(::Any) = true
 isobservable(::NStack) = false
 
+emptynstack = autograd.Variable(PyTorch.torch.randn(batch_size, stack_size...),
+                                requires_grad = true)
+
 "Empty stack"
-empty(eltype::Type, ::Type{NStack}) =
-  NStack(autograd.Variable(PyTorch.torch.zeros(128, 28, 28)))
+empty(T::Type, ::Type{NStack}) = NStack{T}(emptynstack)
 
 # Push
 push_net = asl.MLPNet([stack_size, item_size], [stack_size])
 
 function Base.push!(nstack::NStack, item)
-  (item,) = push_net(nstack.data, item)
+  (item,) = push_net(nstack.data, item.data)
   NStack(nstack)
 end
 
 # Pop
 pop_net = asl.MLPNet([stack_size], [stack_size, item_size])
 
-function Base.pop!(nstack::NStack)
+function Base.pop!(nstack::NStack{T}) where T
   stack, item = pop_net(nstack.data)
   nstack.data = stack
-  item
+  T(item)
 end
 
 ## Test
 ## ====
 "Example program"
-function ex1(items, StackT::Type, nrounds=1)
-  s = empty(eltype(items), StackT)
+function ex1(items, StackT::Type, nrounds=1, itemtype = eltype(items))
+  s = empty(itemtype, StackT)
   # Push n items
   for i = 1:nrounds
-    @show i
     v = take!(items)
-    @show v["size"]()
     push!(s, v)
   end
 
   # Pop n items
   for i = 1:nrounds
-    i = observe!(pop!(s))
+    i = observe!(Symbol(:o, 1), pop!(s))
   end
   return s
 end
 
-"Infinite generator of batches from data"
-function infinite_batches(data, batch_dim, batch_size, nelems = size(data, batch_dim))
-  ids = Iterators.partition(cycle(1:nelems), batch_size)
-  (slicedim(data, batch_dim, id) for id in ids)
-end
+allparams = [collect(push_net[:parameters]());
+             collect(pop_net[:parameters]());
+             emptynstack]
+
+adam = optim.Adam(allparams)
+
+δ(x::Image{Tensor}, y::Image{Tensor}) = functional.mse_loss(x.data, y.data)
 
 function train_stack(batch_size = 128)
   train_x, _ = MNIST.traindata()
   train_x = permutedims(train_x, (3, 1, 2))
-  batchgen_ = infinite_batches(train_x, 1, batch_size)
-  batchgen = IterTools.imap(autograd.Variable ∘ PyTorch.torch.Tensor ∘ float, batchgen_)
+  batchgen_ = DSLearn.infinite_batches(train_x, 1, batch_size)
+  batchgen = IterTools.imap(Image ∘ autograd.Variable ∘ PyTorch.torch.Tensor ∘ float, batchgen_)
   function producer(c::Channel)
     for x in batchgen
       put!(c, x)
@@ -87,13 +91,19 @@ function train_stack(batch_size = 128)
   items1 = Channel(producer)
   items2 = Channel(producer)
   # Test with normal stack
-  ref_ex1 = items -> ex1(items1, Stack)
-  net_ex1 = items -> ex1(items2, NStack)
-  println("Doing reference")
-  trace1 = trace(ref_ex1, batchgen)
-  println("Doing net")
-  trace2 = trace(net_ex1, batchgen)
-  trace1, trace2
+  ref_ex1 = items -> ex1(items1, Stack, 2, Image)
+  net_ex1 = items -> ex1(items2, NStack, 2, Image)
+  params = 
+  for i = 1:1000
+    # println("Doing reference")
+    trace1 = trace(Image, ref_ex1, batchgen)
+    # println("Doing net")
+    trace2 = trace(Image, net_ex1, batchgen)
+    losses = DSLearn.losses(trace2, trace1, δ)
+    @show loss = losses[1]
+    loss[:backward]()
+    adam[:step]()
+  end
 end
 
-# train_stack()
+train_stack()
