@@ -1,3 +1,10 @@
+# Fix empty batch problem
+# Have tensor be a type in PyTorch rather than PyObject
+# CUDIFY
+# Separate out training
+# Parameter Search
+# 
+
 using DSLearn
 import DSLearn: isobservable, observe!
 using DataStructures
@@ -6,46 +13,43 @@ using PyTorch
 using PyCall
 import Base.Iterators
 import IterTools
+using TensorboardX
 @pyimport asl
+
+## Types
+## =====
 
 struct Image{T}
   data::T
 end
+isobservable(::Image) = true
+Base.size(::Type{Image}) = (28, 28)
 
-## Reference
 "Empty stack of type `T`"
 empty(eltype::Type, ::Type{Stack}) = Stack(eltype)
-
-## Neural
-stack_size = (28, 28)
-item_size = (28, 28)
-batch_size = 128
 
 "Differentiable Stack"
 mutable struct NStack{T}
   data::Tensor
 end
-
-isobservable(::Any) = true
 isobservable(::NStack) = false
+Base.size(::Type{NStack}) = (28, 28)
 
-emptynstack = autograd.Variable(PyTorch.torch.randn(batch_size, stack_size...),
+## Interface
+## ==========
+emptynstack = autograd.Variable(PyTorch.torch.randn(128, size(NStack)...),
                                 requires_grad = true)
 
 "Empty stack"
-empty(T::Type, ::Type{NStack}) = NStack{T}(emptynstack)
+NStack(::Type{T}) where T = NStack{T}(emptynstack)
 
-# Push
-push_net = asl.MLPNet([stack_size, item_size], [stack_size])
-
-function Base.push!(nstack::NStack, item)
+push_net = asl.MLPNet([size(NStack), size(Image)], [size(NStack)])
+function Base.push!(nstack::NStack{T}, item::T) where T
   (item,) = push_net(nstack.data, item.data)
   NStack(nstack)
 end
 
-# Pop
-pop_net = asl.MLPNet([stack_size], [stack_size, item_size])
-
+pop_net = asl.MLPNet([size(NStack)], [size(NStack), size(Image)])
 function Base.pop!(nstack::NStack{T}) where T
   stack, item = pop_net(nstack.data)
   nstack.data = stack
@@ -55,14 +59,13 @@ end
 ## Test
 ## ====
 "Example program"
-function ex1(items, StackT::Type, nrounds=1, itemtype = eltype(items))
-  s = empty(itemtype, StackT)
+function ex1(items, Stack, nrounds=1, I::Type = eltype(items))
+  s = Stack(I)
   # Push n items
   for i = 1:nrounds
     v = take!(items)
     push!(s, v)
   end
-
   # Pop n items
   for i = 1:nrounds
     i = observe!(Symbol(:o, 1), pop!(s))
@@ -70,40 +73,71 @@ function ex1(items, StackT::Type, nrounds=1, itemtype = eltype(items))
   return s
 end
 
-allparams = [collect(push_net[:parameters]());
-             collect(pop_net[:parameters]());
-             emptynstack]
+"Another Stack Example"
+function ex2(items, Stack, nrounds=1, I::Type = eltype(items))
+  s = Stack(I)
+  push!(s, take!(items))
+  observe!(:a, pop!(s))
+  observe!(:b, isempty(s))
+end
 
-adam = optim.Adam(allparams)
 
 δ(x::Image{Tensor}, y::Image{Tensor}) = functional.mse_loss(x.data, y.data)
 
-function train_stack(batch_size = 128)
+"Infinite iterator over MNIST"
+function mnistcycle(batch_size)
   train_x, _ = MNIST.traindata()
   train_x = permutedims(train_x, (3, 1, 2))
   batchgen_ = DSLearn.infinite_batches(train_x, 1, batch_size)
   batchgen = IterTools.imap(Image ∘ autograd.Variable ∘ PyTorch.torch.Tensor ∘ float, batchgen_)
+end
+
+function tracegen(f, batchgen)
   function producer(c::Channel)
+    i = 1
     for x in batchgen
       put!(c, x)
+      @show i = i + 1
     end
   end
-  items1 = Channel(producer)
-  items2 = Channel(producer)
-  # Test with normal stack
-  ref_ex1 = items -> ex1(items1, Stack, 2, Image)
-  net_ex1 = items -> ex1(items2, NStack, 2, Image)
-  params = 
-  for i = 1:1000
-    # println("Doing reference")
-    trace1 = trace(Image, ref_ex1, batchgen)
-    # println("Doing net")
-    trace2 = trace(Image, net_ex1, batchgen)
-    losses = DSLearn.losses(trace2, trace1, δ)
-    @show loss = losses[1]
-    loss[:backward]()
-    adam[:step]()
+  items = Channel(producer)
+  function tgen()
+    trace1 = trace(Image, f, items)
   end
 end
 
-train_stack()
+function train_stack(batch_size = 128)
+  batchgen = mnistcycle(batch_size)
+  ref_tracegen = tracegen(items -> ex1(items, Stack, 1, Image), batchgen)
+  n_tracegen = tracegen(items -> ex1(items, NStack, 1, Image), batchgen)
+  ref_tracegen, n_tracegen
+end
+
+ref_ds, n_ds = train_stack()
+
+writer = SummaryWriter()
+
+"""
+Train Data Structure
+"""
+function step(ref_ds, n_ds, δ, fs, consts)
+  params = vcat((collect(f[:parameters]()) for f in fs)...)
+  allparams = [consts..., params...]
+  adam = optim.Adam(allparams)
+  function step!(cb_data, callbacks)
+    ref_trace = ref_ds()
+    net_trace = n_ds()
+    losses = DSLearn.losses(net_trace, ref_trace, δ)
+    loss = losses[1]
+    add_image!(writer, "Empty", emptynstack[1], cb_data[:i])
+    add_scalar!(writer, "Loss", loss, cb_data[:i])
+    loss[:backward]()
+    adam[:step]()
+    @show loss
+    loss
+  end
+end
+
+step! = step(ref_ds, n_ds, δ, [push_net, pop_net], [emptynstack])
+
+DSLearn.Optim.optimize(step!)
