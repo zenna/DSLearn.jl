@@ -1,10 +1,3 @@
-# Fix empty batch problem
-# Have tensor be a type in PyTorch rather than PyObject
-# CUDIFY
-# Separate out training
-# Parameter Search
-# 
-
 using DSLearn
 import DSLearn: isobservable, observe!
 using DataStructures
@@ -24,9 +17,6 @@ struct Image{T}
 end
 isobservable(::Image) = true
 Base.size(::Type{Image}) = (28, 28)
-
-"Empty stack of type `T`"
-empty(eltype::Type, ::Type{Stack}) = Stack(eltype)
 
 "Differentiable Stack"
 mutable struct NStack{T}
