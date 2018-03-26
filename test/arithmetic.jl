@@ -1,5 +1,6 @@
 ## Types
 ## =====
+using ArgParse
 using DSLearn
 import DSLearn: isobservable, observe!
 using DataStructures
@@ -11,11 +12,11 @@ import IterTools
 using TensorboardX
 @pyimport asl
 
-## TODO
-## New type for Continuous Representation
-## Fix batch size mess.
-## If there's control flow can only have batch_size of 1
-## 
+## Save / load from file
+## Hyper parameter search
+## 1. need to be able to save parameters to disk
+## 2. 
+
 
 DSLearn.isobservable(::Any) = true
 
@@ -36,7 +37,7 @@ PyCall.PyObject(x::NInt) = PyObject(x.data)
 
 "CInt continuous representation of an Integer"
 struct CInt <: Integer
-  data::Tensor # TODO Type of this ::Float64
+  data::Tensor
 end
 # Base.promote_rule(::Type{NInt}, ::Type{Int}) = NInt
 Base.size(::Type{NInt}) = (3,)
@@ -49,7 +50,7 @@ Base.size(::Type{NBool}) = (1,)
 PyCall.PyObject(x::NBool) = PyObject(x.data)
 
 struct CBool
-  data::Tensor # TODO: type of thisFloat64
+  data::Tensor
 end
 Base.size(CBool) = (1, )
 
@@ -60,21 +61,17 @@ DSLearn.observe_type(::Type{Int}) = CInt
 DSLearn.observe_type(::Type{NBool}) = CBool
 DSLearn.observe_type(::Type{Bool}) = CBool
 
-n_nint = asl.MLPNet([(1,)], [size(NInt)], batch_norm=false, nmids=PyVector([5]))
 Base.convert(::Type{NInt}, x::Int) =
-  x |> variable |> n_nint |> first |> Tensor |> NInt
+  x |> variable |> net(convert, (Type{NInt}, Int)) |> first |> Tensor |> NInt
 
-nint_cint = asl.MLPNet([size(NInt)], [size(CInt)], batch_norm=false, nmids=PyVector([5]))
-Base.convert(::Type{CInt}, x::NInt) = x |> nint_cint |> first |> Tensor |> CInt
-
+Base.convert(::Type{CInt}, x::NInt) = x |> net(Base.convert, Type{CInt}, NInt) |> first |> Tensor |> CInt
 Base.convert(::Type{CInt}, x::Int) = CInt(variable(x))
 Base.convert(::Type{CBool}, x::Bool) = CBool(variable(Int(x)))
 Base.convert(::Type{Bool}, x::CBool) = x.data.data[:data][1,1] > 0.5
 Base.convert(::Type{Bool}, x::NBool) = convert(Bool, convert(CBool, x))
 
-nbool_cbool = asl.MLPNet([size(NBool)], [size(CBool)], batch_norm=false, nmids=PyVector([5]))
 Base.convert(::Type{CBool}, x::NBool) =
-  x |> nbool_cbool |> first |> functional.sigmoid |> Tensor |> CBool
+  x |> net(Base.convert, (Type{CBool}, NBool)) |> first |> functional.sigmoid |> Tensor |> CBool
 
 ## Interface
 ## =========
@@ -111,18 +108,6 @@ end
 δ(x::CInt, y::CInt) = mse(x.data, y.data)
 δ(x::CBool, y::CBool) = mse(x.data, y.data)
 
-# δ(x::Int, y::NInt) = δ(promote(x, y)...)
-# δ(x::NInt, y::Int) = δ(promote(x, y)...)
-# function δ(x::NInt, y::NInt)
-#   x = PyTorch.torch.stack([x.data, y.data], dim=-1)
-#   n = PyTorch.torch.norm(x, 2, -1)
-#   PyTorch.torch.mean(n)
-# end
-
-# function δ(x::NBool, y::Bool)
-#   y_ = variable(Int(true))
-# end
-
 ## Training
 ## ========
 writer = SummaryWriter()
@@ -135,11 +120,13 @@ function train_arithmetic(batch_size = 1)
   ref_tg, n_tg
 end
 
-function stepgen(ref_ds, n_ds, δ, fs, consts; traceperstep=64)
+function optimzer(fs, consts)
   params = vcat((collect(f[:parameters]()) for f in fs)...)
   allparams = [consts..., params...]
-  adam = optim.Adam(allparams)
-  
+  optimizer = optim.Adam(allparams, lr = Param[:lr])
+end
+
+function stepgen(ref_ds, n_ds, δ, optimizer; traceperstep=64)
   function step!(cb_data, callbacks)
     all_losses = []
     for i = 1:traceperstep
@@ -154,17 +141,117 @@ function stepgen(ref_ds, n_ds, δ, fs, consts; traceperstep=64)
     @show loss = PyTorch.torch.stack(all_losses)[:mean]()
     add_scalar!(writer, "Loss", loss, cb_data[:i])
     loss[:backward]()
-    adam[:step]()
+    optimizer[:step]()
     loss
     # @assert false
   end
 end
 
-ref_tg, n_tg = train_arithmetic()
-step! = stepgen(ref_tg,
-                n_tg,
-                δ,
-                [nplus, nsub, ngt, n_nint, nint_cint, nbool_cbool],
-                [])
-# step!(1, 2)
-DSLearn.Optim.optimize(step!)
+function load_nets!(p::Param)
+  nmids = get(p, :nmids, rand(1:10))
+  net(Base.convert(::Type{NInt}, x::Int)) =
+    asl.MLPNet([(1,)], [size(NInt)], batch_norm=false, nmids=PyVector([nmids]))
+  
+  net(::Type{CBool}, x::NBool) =
+    asl.MLPNet([size(NBool)], [size(CBool)], batch_norm=false, nmids=PyVector([nmids]))
+
+  
+  net(::Type{CInt}, ::NInt) = 
+    nint_cint = asl.MLPNet([size(NInt)], [size(CInt)], batch_norm=false, nmids=PyVector([nmids]))
+end
+
+function load_param(fn::String)
+end
+
+function train()
+  p = load_param("arith_params.param")
+  load_nets!(p)
+  ref_tg, n_tg = train_arithmetic()
+  optimizer = optimizer([nplus, nsub, ngt, n_nint, nint_cint, nbool_cbool], [])
+  step! = stepgen(ref_tg, n_tg, δ, optimizer)
+  save_params!()
+  DSLearn.Optim.optimize(step!)
+end
+
+function runparams()
+  s = ArgParseSettings()
+  @add_arg_table s begin
+    "--train"
+        help = "Train the model"
+    "--name", "-o"
+        help = "Name of job"
+        arg_type = Int
+        default = 0
+    "--log_dir"
+        help = "Path to store data"
+        action = :store_true
+    "--resume_path"
+        help = "Path to resume parameters from"
+        required = true
+    "--nocuda"
+        help = "disables CUDA training"
+        required = true
+    "--dispatch"
+        help = "disables may jobs"
+        required = true
+    "--optfile"
+        help = "Specify load file to get options from"
+        required = true
+    "--nsamples"
+        help = "number of samples for hyperparameters (default: 10)"
+        required = true
+    "--slurm"
+        help = "number of samples for hyperparameters (default: 10)"
+        required = true
+    "--dryrun"
+        help = "number of samples for hyperparameters (default: 10)"
+        required = true
+  end
+end
+
+#   parser.add_argument('--train', action='store_true', default=False,
+#   help='Train the model')
+# parser.add_argument('--name', type=str, default='', metavar='JN',
+#     help='Name of job')
+# parser.add_argument('--group', type=str, default='', metavar='JN',
+#     help='Group name')
+# parser.add_argument('--batch_size', type=int, default=16, metavar='N',
+#     help='input batch size for training (default: 64)')
+# parser.add_argument('--test_batch_size', type=int, default=1000, metavar='N',
+#     help='input batch size for testing (default: 1000)')
+# parser.add_argument('--epochs', type=int, default=10, metavar='N',
+#     help='number of epochs to train (default: 10)')
+# parser.add_argument('--log_dir', type=str, metavar='D',
+#     help='Path to store data')
+# parser.add_argument('--resume_path', type=str, default=None, metavar='R',
+#     help='Path to resume parameters from')
+# parser.add_argument('--nocuda', action='store_true', default=False,
+#     help='disables CUDA training')
+# parser.add_argument('--seed', type=int, default=1, metavar='S',
+#     help='random seed (default: 1)')
+# parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
+#     help='learning rate (default: 0.01)')
+
+# def add_dispatch_args(parser):
+# # Dispatch args
+# parser.add_argument('--dispatch', action='store_true', default=False,
+#     help='Dispatch many jobs')
+# parser.add_argument('--sample', action='store_true', default=False,
+#   help='Sample parameter values')
+# parser.add_argument('--optfile', type=str, default=None,
+#   help='Specify load file to get options from')
+# parser.add_argument('--jobsinchunk', type=int, default=1, metavar='C',
+#     help='Jobs to run per machine (default 1)')
+# parser.add_argument('--nsamples', type=int, default=1, metavar='NS',
+#     help='number of samples for hyperparameters (default: 10)')
+# parser.add_argument('--blocking', action='store_true', default=True,
+#     help='Is hyper parameter search blocking?')
+# parser.add_argument('--slurm', action='store_true', default=False,
+#     help='Use the SLURM batching system')
+# parser.add_argument('--dryrun', action='store_true', default=False,
+#   help='Do a dry run, does not call subprocess')
+# end
+
+# Problem is that we either have a global learning rate or pass around this param object
+# Globals are generally bad but otherwise we need to keep passing around
+# why is passing around bad? Because everyone in ebtween needs to know about this
