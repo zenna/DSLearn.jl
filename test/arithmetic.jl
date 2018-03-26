@@ -42,14 +42,14 @@ end
 Base.size(::Type{NInt}) = (3,)
 
 "Learned Bool"
-struct NBool{T}
-  data::T
+struct NBool
+  data::Tensor
 end
 Base.size(::Type{NBool}) = (1,)
 PyCall.PyObject(x::NBool) = PyObject(x.data)
 
 struct CBool
-  data # TODO: type of thisFloat64
+  data::Tensor # TODO: type of thisFloat64
 end
 Base.size(CBool) = (1, )
 
@@ -57,7 +57,7 @@ Base.size(CBool) = (1, )
 ## ===========
 DSLearn.observe_type(::Type{NInt}) = CInt
 DSLearn.observe_type(::Type{Int}) = CInt
-DSLearn.observe_type(::Type{NBool{T}}) where T <: Any = CBool
+DSLearn.observe_type(::Type{NBool}) = CBool
 DSLearn.observe_type(::Type{Bool}) = CBool
 
 n_nint = asl.MLPNet([(1,)], [size(NInt)], batch_norm=false, nmids=PyVector([5]))
@@ -93,11 +93,11 @@ Base.:>(x::NInt, y::Int) = ngt(x, NInt(y)) |> first |> Tensor |> NBool
 ## ========
 function ex1(rng, I::Type)
   x = observe!(:a, I(1) + I(2))
-  z = observe!(:b, x + rand(rng, 1:100))
-  if convert(Bool, observe!(:b1, z > 50))
-    z = observe!(:c1, z + rand(rng, 1:100))
+  z = observe!(:b, x + rand(rng, 1:10))
+  if convert(Bool, observe!(:b1, z > 5))
+    z = observe!(:c1, z + rand(rng, 1:10))
   else
-    z = observe!(:c2, z - rand(rng, 1:100))
+    z = observe!(:c2, z - rand(rng, 1:10))
   end
   z
 end
@@ -105,10 +105,7 @@ end
 ## Distances
 ## =========
 function mse(x, y)
-  # @show x, y  
-  x = PyTorch.torch.stack([x, y], dim=-1)
-  n = PyTorch.torch.norm(x, 2, -1)
-  PyTorch.torch.mean(n)
+  l = PyTorch.torch.norm(x.data - y.data)
 end
 
 δ(x::CInt, y::CInt) = mse(x.data, y.data)
@@ -138,7 +135,7 @@ function train_arithmetic(batch_size = 1)
   ref_tg, n_tg
 end
 
-function stepgen(ref_ds, n_ds, δ, fs, consts; traceperstep=32)
+function stepgen(ref_ds, n_ds, δ, fs, consts; traceperstep=64)
   params = vcat((collect(f[:parameters]()) for f in fs)...)
   allparams = [consts..., params...]
   adam = optim.Adam(allparams)
@@ -146,13 +143,13 @@ function stepgen(ref_ds, n_ds, δ, fs, consts; traceperstep=32)
   function step!(cb_data, callbacks)
     all_losses = []
     for i = 1:traceperstep
-      # @show i
-      # println/("Net")
       net_trace = n_ds()
-      # println("Ref")
       ref_trace = ref_ds()
       losses = DSLearn.losses(net_trace, ref_trace, δ)
       all_losses = vcat(all_losses, losses)
+    end
+    if cb_data[:i] % 100 == 0
+      @show all_losses
     end
     @show loss = PyTorch.torch.stack(all_losses)[:mean]()
     add_scalar!(writer, "Loss", loss, cb_data[:i])
