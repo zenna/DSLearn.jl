@@ -27,7 +27,6 @@ struct CInt{T} <: Integer
   data::T
 end
 Base.size(::Type{CInt}) = (1,)
-# Base.promote_rule(::Type{NInt}, ::Type{Int}) = NInt
 
 "Learned Bool"
 struct NBool{T}
@@ -176,6 +175,8 @@ mse(x::AbstractArray, y::AbstractArray) = Flux.mse(x, y)
 accum(losses) = mean(losses)
 
 function optimizer(fs, consts)
+  fs
+  consts
   allparams = vcat(params.(fs)..., params.(consts)...)
   Flux.Optimise.ADAM(allparams)
 end
@@ -224,6 +225,7 @@ function stepgen(ref_ds, n_ds, δ, optimizer; traceperstep=64)
     back!(loss)
     update!(optimizer)
     loss
+    # @assert false
   end
 end
 
