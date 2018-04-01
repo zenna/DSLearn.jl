@@ -2,89 +2,66 @@
 ## =====
 using ArgParse
 using DSLearn
-import DSLearn: isobservable, observe!
+import DSLearn: isobservable, observe!, net
 using DataStructures
 using MLDatasets
-using PyTorch
-using PyCall
 import Base.Iterators
 import IterTools
 using TensorboardX
-@pyimport asl
-
-## Save / load from file
-## Hyper parameter search
-## 1. need to be able to save parameters to disk
-## 2. 
-
 
 DSLearn.isobservable(::Any) = true
 
-function variable(x::Int, requires_grad=false)
-  x = fill(float(x), (1, 1))
-  autograd.Variable(PyTorch.torch.Tensor(x), requires_grad=requires_grad)
-end
-
 ## Types
 ## =====
-
 "Learned representation of an Integer"
-struct NInt <: Integer
-  data::Tensor
+struct NInt{T} <: Integer
+  data::T
 end
 NInt(x::Int) = convert(NInt, x)
-PyCall.PyObject(x::NInt) = PyObject(x.data)
 
 "CInt continuous representation of an Integer"
-struct CInt <: Integer
-  data::Tensor
+struct CInt{T} <: Integer
+  data::T
 end
 # Base.promote_rule(::Type{NInt}, ::Type{Int}) = NInt
 Base.size(::Type{NInt}) = (3,)
 
 "Learned Bool"
-struct NBool
-  data::Tensor
+struct NBool{T}
+  data::T
 end
 Base.size(::Type{NBool}) = (1,)
-PyCall.PyObject(x::NBool) = PyObject(x.data)
 
-struct CBool
-  data::Tensor
+struct CBool{T}
+  data::T
 end
 Base.size(CBool) = (1, )
 
 ## Conversions
 ## ===========
-DSLearn.observe_type(::Type{NInt}) = CInt
+DSLearn.observe_type(::Type{<:NInt}) = CInt
 DSLearn.observe_type(::Type{Int}) = CInt
-DSLearn.observe_type(::Type{NBool}) = CBool
+DSLearn.observe_type(::Type{<:NBool}) = CBool
 DSLearn.observe_type(::Type{Bool}) = CBool
 
-Base.convert(::Type{NInt}, x::Int) =
-  x |> variable |> net(convert, (Type{NInt}, Int)) |> first |> Tensor |> NInt
+Base.convert(T::Type{NInt}, x::CInt) = net(Base.convert, Type{NInt}, CInt)(x)
+Base.convert(T::Type{NInt}, x::Int) = convert(NInt, convert(CInt, x))
+Base.convert(T::Type{CInt}, x::NInt) = net(Base.convert, Type{CInt}, NInt)(x)
+Base.convert(::Type{CInt}, x::Int) = CInt(variable(x)) #FIXME1
 
-Base.convert(::Type{CInt}, x::NInt) = x |> net(Base.convert, Type{CInt}, NInt) |> first |> Tensor |> CInt
-Base.convert(::Type{CInt}, x::Int) = CInt(variable(x))
 Base.convert(::Type{CBool}, x::Bool) = CBool(variable(Int(x)))
 Base.convert(::Type{Bool}, x::CBool) = x.data.data[:data][1,1] > 0.5
 Base.convert(::Type{Bool}, x::NBool) = convert(Bool, convert(CBool, x))
-
-Base.convert(::Type{CBool}, x::NBool) =
-  x |> net(Base.convert, (Type{CBool}, NBool)) |> first |> functional.sigmoid |> Tensor |> CBool
+Base.convert(::Type{CBool}, x::NBool) = net(Base.convert, Type{CBool}, NBool)(x)
 
 ## Interface
 ## =========
-nplus = asl.MLPNet([size(NInt), size(NInt)], [size(NInt)], batch_norm=false, nmids=PyVector([5]))
-Base.:+(x::NInt, y::NInt) = nplus(x, y) |> first |> Tensor |> NInt
-Base.:+(x::NInt, y::Int) = x + NInt(y)
-
-nsub = asl.MLPNet([size(NInt), size(NInt)], [size(NInt)], batch_norm=false, nmids=PyVector([5]))
-Base.:-(x::NInt, y::NInt) = nsub(x, y) |> first |> Tensor |> NInt
-Base.:-(x::NInt, y::Int) = x - NInt(y)
-
-ngt = asl.MLPNet([size(NInt), size(NInt)], [size(NBool)], batch_norm=false, nmids=PyVector([5]))
-Base.:>(x::NInt, y::Int) = ngt(x, NInt(y)) |> first |> Tensor |> NBool
+Base.:+(x::NInt, y::NInt) = net(+, NInt, NInt)(x, y)
+Base.:+(x::NInt, y::Int) = x + convert(NInt, y) # FIXME DRY
+Base.:-(x::NInt, y::NInt) = net(+, NInt, NInt)(x, y)
+Base.:-(x::NInt, y::Int) = x - convert(NInt, y)
+Base.:>(x::NInt, y::NInt) = net(>, NInt, NInt)(x, y)
+Base.:>(x::NInt, y::Int) = x > convert(NInt, y)
 
 ## Programs
 ## ========
@@ -94,16 +71,109 @@ function ex1(rng, I::Type)
   if convert(Bool, observe!(:b1, z > 5))
     z = observe!(:c1, z + rand(rng, 1:10))
   else
-    z = observe!(:c2, z - rand(rng, 1:10))
+    z = observe!(:c2, z -  rand(rng, 1:10))
   end
   z
 end
 
+## Param
+## =====
+
+struct Param
+end
+
+## PyTorch specific
+## ================
+using PyCall
+using PyTorch
+@pyimport asl
+
+function variable(x::Int, requires_grad=false)
+  x = fill(float(x), (1, 1))
+  Tensor(autograd.Variable(PyTorch.torch.Tensor(x), requires_grad=requires_grad))
+end
+PyCall.PyObject(x::NInt) = PyObject(x.data)
+PyCall.PyObject(x::NBool) = PyObject(x.data)
+PyCall.PyObject(x::CInt) = PyObject(x.data)
+
+# function load_nets!(p::Param)
+  nmids = 5
+  nint_cint_ = asl.MLPNet([size(CInt)], [size(NInt)], batch_norm=false, nmids=PyVector([nmids]))
+  nint_cint = NInt ∘ Tensor ∘ first ∘ nint_cint_
+  @inline DSLearn.net(::typeof(Base.convert), ::Type{Type{NInt}}, ::Type{CInt}) = nint_cint
+
+  cint_nint_ = asl.MLPNet([size(NInt)], [size(CInt)], batch_norm=false, nmids=PyVector([nmids]))
+  cint_nint = CInt  ∘ Tensor ∘ first ∘ cint_nint_
+  @inline DSLearn.net(::typeof(Base.convert), ::Type{Type{CInt}}, ::Type{NInt}) = cint_nint
+  
+  cbool_nbool_ = asl.MLPNet([size(NBool)], [size(CBool)], batch_norm=false, nmids=PyVector([nmids]))
+  cbool_nbool = CBool ∘ Tensor ∘ functional.sigmoid ∘ first ∘ cbool_nbool_
+  @inline DSLearn.net(::typeof(Base.convert), ::Type{Type{CBool}}, ::Type{NBool}) = cbool_nbool
+  
+  plus_net_ = asl.MLPNet([size(NInt), size(NInt)], [size(NInt)], batch_norm=false, nmids=PyVector([5]))
+  plus_net = NInt ∘ Tensor ∘ first  ∘ plus_net_
+  @inline DSLearn.net(::typeof(+), ::Type{NInt}, ::Type{NInt}) = plus_net
+
+  sub_net_ = asl.MLPNet([size(NInt), size(NInt)], [size(NInt)], batch_norm=false, nmids=PyVector([5]))
+  sub_net = NInt ∘ Tensor ∘ first  ∘ sub_net_
+  @inline DSLearn.net(::typeof(-), ::Type{NInt}, ::Type{NInt}) = sub_net
+
+  ngt_net_ = asl.MLPNet([size(NInt), size(NInt)], [size(NBool)], batch_norm=false, nmids=PyVector([5]))
+  ngt_net = NBool ∘ Tensor ∘ first ∘ ngt_net_
+  @inline DSLearn.net(::typeof(>), ::Type{NInt}, ::Type{NInt}) = ngt_net
+
+function load_nets!(p::Param)
+  ngt_net_, sub_net_, plus_net_, cint_nint_, nint_cint_, cbool_nbool_
+end
+
+function optimizer(fs, consts)
+  params = vcat((collect(f[:parameters]()) for f in fs)...)
+  allparams = [consts..., params...]
+  optim.Adam(allparams)
+end
+
+mse(x, y) = PyTorch.torch.norm(x.data - y.data)
+accumulate(losses) = PyTorch.torch.stack(losses)[:mean]()
+
+## FLUX Specific 
+## =============
+# import FluxAddons: mlp
+# using Flux
+# # import Flux: net
+# function load_nets!(p::Param)
+#   nmids = get(p, :nmids, rand(1:10))
+#   net_ = mlp(Int, NInt)
+#   @inline net(::typeof(Base.convert), ::Type{Type{NInt}}, ::Type{Int}) = net_  # FIXME: How to make this global
+
+#   cint_nint = mlp(NInt, CInt)
+#   @inline Base.convert(::typeof{Base.convert}, ::Type{Type{CInt}}, ::NInt) = cint_nint
+  
+#   cbool_nbool = mlp(NBool, CBool)
+#   @inline net(::typeof(Base.convert), ::Type{Type{CBool}}, x::NBool) = cbool_nbool
+  
+#   # nint_cint = asl.MLPNet([size(NInt)], [size(CInt)], batch_norm=false, nmids=PyVector([nmids]))
+#   plus_net = mlp((NInt, NInt), NInt)
+#   @inline net(::typeof(+), ::Type{NInt}, ::Type{NInt}) = plus_net
+
+#   sub_net = mlp((NInt, NInt), NInt)
+#   @inline net(::typeof(-), ::Type{NInt}, ::Type{NInt}) = sub_net
+
+#   ngt_net = nlp((NInt, NInt), NBool)
+#   @inline net(::typeof(>), ::Type{NInt}, ::Type{NInt}) = ngt_net
+# end
+
+# mse(x::AbstractArray, y::AbstractArray) = Flux.mse(x, y)
+# accumulate(losses) = mean(sun(losses))
+
+# # FIXME: TODO
+# function fluxoptimzer(fs, consts)
+#   params = vcat((collect(f[:parameters]()) for f in fs)...)
+#   allparams = [consts..., params...]
+#   optimizer = optim.Adam(allparams, lr = Param[:lr])
+# end
+
 ## Distances
 ## =========
-function mse(x, y)
-  l = PyTorch.torch.norm(x.data - y.data)
-end
 
 δ(x::CInt, y::CInt) = mse(x.data, y.data)
 δ(x::CBool, y::CBool) = mse(x.data, y.data)
@@ -126,50 +196,35 @@ function optimzer(fs, consts)
   optimizer = optim.Adam(allparams, lr = Param[:lr])
 end
 
+"Generate steps"
 function stepgen(ref_ds, n_ds, δ, optimizer; traceperstep=64)
+
   function step!(cb_data, callbacks)
     all_losses = []
     for i = 1:traceperstep
-      net_trace = n_ds()
-      ref_trace = ref_ds()
+      @grab net_trace = n_ds()
+      @grab ref_trace = ref_ds()
       losses = DSLearn.losses(net_trace, ref_trace, δ)
       all_losses = vcat(all_losses, losses)
     end
     if cb_data[:i] % 100 == 0
       @show all_losses
     end
-    @show loss = PyTorch.torch.stack(all_losses)[:mean]()
+    @show loss = accumulate(all_losses)
     add_scalar!(writer, "Loss", loss, cb_data[:i])
     loss[:backward]()
     optimizer[:step]()
     loss
-    # @assert false
   end
 end
 
-function load_nets!(p::Param)
-  nmids = get(p, :nmids, rand(1:10))
-  net(Base.convert(::Type{NInt}, x::Int)) =
-    asl.MLPNet([(1,)], [size(NInt)], batch_norm=false, nmids=PyVector([nmids]))
-  
-  net(::Type{CBool}, x::NBool) =
-    asl.MLPNet([size(NBool)], [size(CBool)], batch_norm=false, nmids=PyVector([nmids]))
-
-  
-  net(::Type{CInt}, ::NInt) = 
-    nint_cint = asl.MLPNet([size(NInt)], [size(CInt)], batch_norm=false, nmids=PyVector([nmids]))
-end
-
-function load_param(fn::String)
-end
-
 function train()
-  p = load_param("arith_params.param")
-  load_nets!(p)
+  p = Param()
+  nets = load_nets!(p)
   ref_tg, n_tg = train_arithmetic()
-  optimizer = optimizer([nplus, nsub, ngt, n_nint, nint_cint, nbool_cbool], [])
-  step! = stepgen(ref_tg, n_tg, δ, optimizer)
-  save_params!()
+  optimizer_ = optimizer(nets, [])
+  step! = stepgen(ref_tg, n_tg, δ, optimizer_)
+  # save_params!()
   DSLearn.Optim.optimize(step!)
 end
 
@@ -197,61 +252,11 @@ function runparams()
     "--optfile"
         help = "Specify load file to get options from"
         required = true
-    "--nsamples"
-        help = "number of samples for hyperparameters (default: 10)"
-        required = true
     "--slurm"
-        help = "number of samples for hyperparameters (default: 10)"
-        required = true
+        help = "Use the SLURM batching system"
+        default = false
     "--dryrun"
-        help = "number of samples for hyperparameters (default: 10)"
-        required = true
+        help = "Do a dry run, does not call subprocess"
+        defaulse = false
   end
 end
-
-#   parser.add_argument('--train', action='store_true', default=False,
-#   help='Train the model')
-# parser.add_argument('--name', type=str, default='', metavar='JN',
-#     help='Name of job')
-# parser.add_argument('--group', type=str, default='', metavar='JN',
-#     help='Group name')
-# parser.add_argument('--batch_size', type=int, default=16, metavar='N',
-#     help='input batch size for training (default: 64)')
-# parser.add_argument('--test_batch_size', type=int, default=1000, metavar='N',
-#     help='input batch size for testing (default: 1000)')
-# parser.add_argument('--epochs', type=int, default=10, metavar='N',
-#     help='number of epochs to train (default: 10)')
-# parser.add_argument('--log_dir', type=str, metavar='D',
-#     help='Path to store data')
-# parser.add_argument('--resume_path', type=str, default=None, metavar='R',
-#     help='Path to resume parameters from')
-# parser.add_argument('--nocuda', action='store_true', default=False,
-#     help='disables CUDA training')
-# parser.add_argument('--seed', type=int, default=1, metavar='S',
-#     help='random seed (default: 1)')
-# parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
-#     help='learning rate (default: 0.01)')
-
-# def add_dispatch_args(parser):
-# # Dispatch args
-# parser.add_argument('--dispatch', action='store_true', default=False,
-#     help='Dispatch many jobs')
-# parser.add_argument('--sample', action='store_true', default=False,
-#   help='Sample parameter values')
-# parser.add_argument('--optfile', type=str, default=None,
-#   help='Specify load file to get options from')
-# parser.add_argument('--jobsinchunk', type=int, default=1, metavar='C',
-#     help='Jobs to run per machine (default 1)')
-# parser.add_argument('--nsamples', type=int, default=1, metavar='NS',
-#     help='number of samples for hyperparameters (default: 10)')
-# parser.add_argument('--blocking', action='store_true', default=True,
-#     help='Is hyper parameter search blocking?')
-# parser.add_argument('--slurm', action='store_true', default=False,
-#     help='Use the SLURM batching system')
-# parser.add_argument('--dryrun', action='store_true', default=False,
-#   help='Do a dry run, does not call subprocess')
-# end
-
-# Problem is that we either have a global learning rate or pass around this param object
-# Globals are generally bad but otherwise we need to keep passing around
-# why is passing around bad? Because everyone in ebtween needs to know about this
