@@ -239,37 +239,4 @@ function train()
   DSLearn.Optim.optimize(step!)
 end
 
-# function runparams()
-#   s = ArgParseSettings()
-#   @add_arg_table s begin
-#     "--train"
-#         help = "Train the model"
-#     "--name", "-o"
-#         help = "Name of job"
-#         arg_type = Int
-#         default = 0
-#     "--log_dir"
-#         help = "Path to store data"
-#         action = :store_true
-#     "--resume_path"
-#         help = "Path to resume parameters from"
-#         required = true
-#     "--nocuda"
-#         help = "disables CUDA training"
-#         required = true
-#     "--dispatch"
-#         help = "disables may jobs"
-#         required = true
-#     "--optfile"
-#         help = "Specify load file to get options from"
-#         required = true
-#     "--slurm"
-#         help = "Use the SLURM batching system"
-#         default = false
-#     "--dryrun"
-#         help = "Do a dry run, does not call subprocess"
-#         defaulse = false
-#   end
-# end
-
 train()
