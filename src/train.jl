@@ -33,7 +33,7 @@ function stepgen(ref_ds,
       ref_trace = ref_ds()
 
       # Get all the losses
-      losses = DSLearn.losses(net_trace, ref_trace, δ)
+      @show losses = DSLearn.losses(net_trace, ref_trace, δ)
       for loss in losses
         push!(all_losses, loss)
       end

@@ -47,7 +47,12 @@ DSLearn.observe_type(::Type{Ray}) = CRay
 
 Base.convert(::Type{CRay}, ray::Ray) = CRay(addims(vcat(ray.orig, ray.dir)))
 function Base.convert(::Type{Intersection}, cint::CIntersection)
+  @grab cint
+  @assert false
   Intersection(cint.data...)
+end
+function Base.convert(::Type{CIntersection}, int::Intersection)
+  @assert false
 end
 
 addims(x) = reshape(x, size(x)..., 1)
