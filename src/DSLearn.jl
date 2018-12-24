@@ -1,7 +1,7 @@
 "Data Structure Learning"
 module DSLearn
 using Spec
-using ZenUtils
+#using ZenUtils
 import Base.Iterators
 
 # include("util/misc.jl")

@@ -1,4 +1,5 @@
+using DSLearn
 using Spec
 
 walktests(DSLearn)
-walktests(DSLearn, joinpath("DSLearn", "test", "tests", "models"))
+walktests(DSLearn; test_dir = joinpath(Pkg.dir(string(DSLearn)), "test", "models"))

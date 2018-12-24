@@ -5,8 +5,6 @@ function isobservable end
 function observe!(nm::Symbol, x::T, trace_stack = global_trace_stack()) where T
   # @pre isobservable(x)
   OT = observe_type(T)
-  @grab OT
-  @grab x
   trace_stack.trace[nm] = convert(OT, x)
   x
 end
