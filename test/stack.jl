@@ -2,12 +2,9 @@ using DSLearn
 import DSLearn: isobservable, observe!
 using DataStructures
 using MLDatasets
-using PyTorch
-using PyCall
 import Base.Iterators
 import IterTools
 using TensorboardX
-@pyimport asl
 
 ## Types
 ## =====

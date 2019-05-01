@@ -9,6 +9,7 @@ include("generator.jl")
 include("trace.jl")
 include("observe.jl")
 include("train.jl")
+
 "Return network associated with function `net(+. 1. 2)`"
 function net end
 

@@ -19,18 +19,18 @@ function with_trace(f, trace_stack::Trace)
 end
 
 "Execute function `f(args)` and record trace of observable values"
-function Base.trace(trace_stack::Trace, f::Function, args...; kwargs...)::Trace
+function trace(trace_stack::Trace, f::Function, args...; kwargs...)::Trace
   with_trace(trace_stack) do
     f(args...; kwargs...)
   end
   trace_stack
 end
 
-function Base.trace(T::Type, f::Function, args...; kwargs...)::Trace
+function trace(T::Type, f::Function, args...; kwargs...)::Trace
   trace(Trace(Dict{Symbol, T}()), f, args...; kwargs...)
 end
 
-Base.trace(f::Function, args...; kwargs...) = trace(Any, args...; kwargs...)
+trace(f::Function, args...; kwargs...) = trace(Any, args...; kwargs...)
 
 "Losses between corresponding elements of trace"
 function losses(t1::Trace, t2::Trace, δ)
