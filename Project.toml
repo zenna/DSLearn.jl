@@ -1,0 +1,7 @@
+name = "DSLearn"
+uuid = "3b80dbfc-8db2-11e8-22e5-79da9c3bc97d"
+authors = ["Zenna Tavares <zennatavares@gmail.com>"]
+version = "0.1.0"
+
+[deps]
+Spec = "b8ccf107-3a88-5e0f-823b-b838c6a0f327"
